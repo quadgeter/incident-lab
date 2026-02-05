@@ -4,6 +4,7 @@ import asyncio
 import json
 import random
 import time
+from datetime import datetime, timezone
 from redis.asyncio import Redis
 
 # Constants
@@ -24,7 +25,7 @@ OP_TIMEOUT_S = 0.25
 
 # Helpers
 def log_event(event):
-    event["timestamp"] = time.time()
+    event["timestamp"] = datetime.now(timezone.utc).isoformat()
     event["elapsed_ms"] = (time.perf_counter() - t0_perf) * 1000
     event["t0_wall"] = t0_wall
     print(json.dumps(event))
@@ -65,7 +66,6 @@ async def set_keys():
     log_event(
         {
             "event": "PRELOAD_START",
-            "timestamp": time.time(),
         }
     )
 
@@ -79,7 +79,6 @@ async def set_keys():
         {
             "event": "PRELOAD_END",
             "keys_set": KEYSPACE_SIZE,
-            "timestamp": time.time(),
             "duration": time.perf_counter() - t0
         }
     )
@@ -163,7 +162,6 @@ async def ramp():
     }
     injection_start = {
         "event": "INJECTION_START",
-        "timestamp": time.time()
     }
     log_event(ramp_start)
     t0 = time.perf_counter()
@@ -243,7 +241,7 @@ async def ramp():
             "sets_err": sets_err,
             "p50_ms": p50,
             "p95_ms": p95,
-            "elapsed_ms": elapsed_ms,
+            "tick_ms": elapsed_ms,
             "behind_ms": behind_ms
         }
         log_event(output)
@@ -254,16 +252,14 @@ async def ramp():
     log_event({
         "event": "RAMP_END",
         "elapsed_s": time.perf_counter() - t0,
-        "timestamp": time.time()
     })
-
-#TODO Exit Summary
 
 async def main():
     global t0_perf
     global t0_wall
     t0_perf = time.perf_counter()
-    t0_wall = time.time()
+    t0_wall = datetime.now(timezone.utc).isoformat()
+    status = "ok"
 
     try: 
         get_redis()
