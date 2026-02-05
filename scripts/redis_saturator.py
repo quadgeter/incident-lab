@@ -24,7 +24,9 @@ OP_TIMEOUT_S = 0.25
 
 # Helpers
 def log_event(event):
-    # TODO add common fields (timestamp, elapsed_ms, t0_wall)
+    event["timestamp"] = time.time()
+    event["elapsed_ms"] = (time.perf_counter() - t0_perf) * 1000
+    event["t0_wall"] = t0_wall
     print(json.dumps(event))
 
 async def timed_op(op_name: str, coro):
@@ -145,7 +147,7 @@ async def warmup(warmup_qps):
             "sets_err": sets_err,
             "p50_ms": p50,
             "p95_ms": p95,
-            "elapsed_ms": elapsed_ms,
+            "elapsed_ms_local": elapsed_ms,
             "behind_ms": behind_ms
         }
         log_event(output)
@@ -263,10 +265,29 @@ async def main():
     t0_perf = time.perf_counter()
     t0_wall = time.time()
 
-    get_redis()
-    await set_keys()
-    await warmup(warmup_qps=200)
-    await ramp()
+    try: 
+        get_redis()
+        await set_keys()
+        await warmup(warmup_qps=200)
+        await ramp()
+    except asyncio.CancelledError:
+        log_event({"event": "RUN_ABORT", "reason": "CancelledError"})
+        status = "aborted"
+        raise
+    except KeyboardInterrupt:
+        log_event(
+            {
+                "event": "RUN_ABORT",
+                "reason": "KeyboardInterrupt"
+            }
+        )
+        status = "aborted"
+    finally:
+        await redis.aclose()
+        log_event({"event": "RUN_END"})
+    
+    return 0 if status == "ok" else 0
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import sys
+    sys.exit(asyncio.run(main()))
