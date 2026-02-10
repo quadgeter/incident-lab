@@ -22,6 +22,8 @@ SEED = 256
 RNG = random.Random(SEED)
 VALUE_BYTES = b"x" * VALUE_SIZE
 OP_TIMEOUT_S = 0.25
+MAX_INFLIGHT = 500
+sem = asyncio.Semaphore(MAX_INFLIGHT)
 
 # Helpers
 def log_event(event):
@@ -37,7 +39,6 @@ async def timed_op(op_name: str, coro):
         ok = True
         err_type = None
     except asyncio.TimeoutError:
-        latency_ms = None
         result = None
         ok = False
         err_type = "timeout"
@@ -48,6 +49,15 @@ async def timed_op(op_name: str, coro):
     latency_ms = (time.perf_counter() - start) * 1000.0
     return (op_name, latency_ms, ok, err_type, result)
 
+async def limited_timed_op(op_name, coro_factory):
+    async with sem:
+        return await timed_op(op_name, coro_factory())
+    
+async def sleep_until(t):
+    dt = t - time.perf_counter()
+    if dt > 0:
+        await asyncio.sleep(dt)
+
 def percentile(values, p):
     if not values:
         return None
@@ -57,7 +67,13 @@ def percentile(values, p):
 
 def get_redis():
     global redis
-    redis = Redis.from_url(REDIS_URL)
+
+    pool = redis.ConnectionPool.from_url(
+        REDIS_URL,
+        max_connections=2000,
+        decode_responses=False,
+    )
+    r = redis.Redis(connection_pool=pool)
     log_event({"event": "RUN_START"})
     return redis
 
@@ -185,21 +201,30 @@ async def ramp():
                 "step_idx": step_idx,
                 "target_qps": target_qps
             })
-
+        
         # run tick logic
         tick_start = time.perf_counter()
-        num_gets = int(target_qps * GET_RATIO)
-        num_sets = target_qps - num_gets
+        if target_qps == 0:
+            await asyncio.sleep(1)
+            continue
+        spacing = 1.0 / target_qps
+        num_gets = 0
+        num_sets = 0
+        target_gets = int(target_qps * GET_RATIO)
 
         tasks = []
 
-        for i in range(num_gets):
+        for k in range(target_qps):
             idx = RNG.randrange(KEYSPACE_SIZE)
-            tasks.append(timed_op('get', redis.get(f"key:{idx}")))
-        
-        for i in range(num_sets):
-            idx = RNG.randrange(KEYSPACE_SIZE)
-            tasks.append(timed_op('set', redis.set(f"key:{idx}", VALUE_BYTES)))
+            scheduled = tick_start + k * spacing
+            await sleep_until(scheduled)
+
+            if num_gets < target_gets:
+                tasks.append(asyncio.create_task(limited_timed_op('get', lambda: redis.get(f"key:{idx}"))))
+                num_gets += 1
+            else:
+                tasks.append(asyncio.create_task(limited_timed_op('set', lambda: redis.set(f"key:{idx}", VALUE_BYTES))))
+                num_sets += 1
         results = await asyncio.gather(*tasks, return_exceptions=False)
 
         completed_ops = [op for op in results if op[2]]

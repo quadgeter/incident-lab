@@ -159,18 +159,20 @@ def log_request(
 # ---------------------------------------------------------------------------
 def redis_get(client: redis.Redis, key: str) -> tuple[Optional[str], float]:
     start = time.perf_counter()
-    value = client.get(key)
-    duration = time.perf_counter() - start
-    REDIS_OP_DURATION.labels(op="get").observe(duration)
-    return value, duration * 1000
+    try:
+        value = client.get(key)
+        return value, (time.perf_counter() - start) * 1000
+    finally:
+        REDIS_OP_DURATION.labels(op="get").observe(time.perf_counter() - start)
 
 
 def redis_set(client: redis.Redis, key: str, value: str, ttl: int) -> float:
     start = time.perf_counter()
-    client.setex(key, ttl, value)
-    duration = time.perf_counter() - start
-    REDIS_OP_DURATION.labels(op="set").observe(duration)
-    return duration * 1000
+    try:
+        client.setex(key, ttl, value)
+        return (time.perf_counter() - start) * 1000
+    finally:
+        REDIS_OP_DURATION.labels(op="set").observe(time.perf_counter() - start)
 
 
 def classify_redis_error(e: Exception) -> str:
