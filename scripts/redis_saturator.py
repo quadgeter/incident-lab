@@ -23,6 +23,7 @@ RNG = random.Random(SEED)
 VALUE_BYTES = b"x" * VALUE_SIZE
 OP_TIMEOUT_S = 0.25
 MAX_INFLIGHT = 500
+LATE_GRACE_S = 0.005
 sem = asyncio.Semaphore(MAX_INFLIGHT)
 
 # Helpers
@@ -205,7 +206,7 @@ async def ramp():
         # run tick logic
         tick_start = time.perf_counter()
         if target_qps == 0:
-            await asyncio.sleep(1)
+            await asyncio.sleep(next_tick  - time.perf_counter())
             continue
         spacing = 1.0 / target_qps
         num_gets = 0
@@ -213,10 +214,18 @@ async def ramp():
         target_gets = int(target_qps * GET_RATIO)
 
         tasks = []
-
+        dropped_ops = 0
+        
         for k in range(target_qps):
             idx = RNG.randrange(KEYSPACE_SIZE)
+            
             scheduled = tick_start + k * spacing
+            now = time.perf_counter()
+
+            if now > scheduled + LATE_GRACE_S:
+                dropped_ops += 1
+                continue
+
             await sleep_until(scheduled)
 
             if num_gets < target_gets:
@@ -241,10 +250,6 @@ async def ramp():
         p95 = percentile(latencies, 0.95)
         p50 = percentile(latencies, 0.50)
         elapsed_ms = (time.perf_counter() - tick_start) * 1000
-        if elapsed_ms:
-            burst_qps = num_completed / (elapsed_ms / 1000.0)
-        else:
-            burst_qps = None
         effective_qps = num_completed / 1.0
         
         next_tick = t0 + (s + 1) * 1.0
@@ -256,10 +261,10 @@ async def ramp():
             "t": time.perf_counter() - t0,
             "target_qps": target_qps,
             "effective_qps": effective_qps,
-            "burst_qps": burst_qps,
             "attempted_ops": num_gets + num_sets,
             "ok_ops": num_completed,
             "error_ops": num_errors,
+            "dropped_ops": dropped_ops,
             "gets_ok": gets_ok,
             "sets_ok": sets_ok,
             "gets_err": gets_err,
